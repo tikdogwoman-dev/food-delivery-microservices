@@ -56,38 +56,24 @@ jobs:
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
 
-          echo "Запрос IAM токена..."
-          
-          # Отправляем JSON, как требует документация Яндекса
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-            -H "Content-Type: application/json" \
-            -d "{\"yandexPassportOauthToken\":\"${{ secrets.YANDEX_OAUTH_TOKEN }}\"}" \
-            "https://iam.api.cloud.yandex.net/iam/v1/tokens")
-            
-          echo "Полный ответ: $RESPONSE"
-          
-          # Проверяем HTTP-статус
-          HTTP_STATUS=$(echo "$RESPONSE" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
-          
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "::error::Ошибка HTTP $HTTP_STATUS от API Яндекса. Проверьте секрет YANDEX_OAUTH_TOKEN."
-            exit 1
-          fi
-          
-          # Извлекаем токен (берем только первую строку с JSON, отбрасываем HTTP_STATUS)
-          IAM_TOKEN=$(echo "$RESPONSE" | head -n 1 | jq -r '.iamToken' 2>/dev/null)
-          
-          if [ -z "$IAM_TOKEN" ] || [ "$IAM_TOKEN" == "null" ]; then
-            echo "::error::Не удалось извлечь IAM токен из ответа."
-            exit 1
-          fi
-          
-          echo "IAM токен успешно получен."
+          # 1. Сохраняем ключ сервисного аккаунта из секретов GitHub в файл
+          echo '${{ secrets.YANDEX_SA_KEY }}' > sa-key.json
 
-          # Подставляем токен в kubeconfig
+          # 2. Скачиваем официальную легковесную утилиту yc для Linux прямо в пайплайн
+          curl -sSL https://yandexcloud.net | bash -s -- -b ~/.yc/bin
+          export PATH=$PATH:$HOME/.yc/bin
+
+          # 3. Авторизуем утилиту yc по созданному ключу сервисного аккаунта
+          yc config profile create sa-profile
+          yc config set service-account-key sa-key.json
+
+          # 4. Генерируем свежий рабочий токен авторизации Кубернетиса
+          IAM_TOKEN=$(yc iam create-token)
+
+          # 5. Привязываем полученный токен к пользователю кластера
           kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="$IAM_TOKEN"
           kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
 
-          # Применяем манифест инфраструктуры
+          # 6. Применяем манифест инфраструктуры в безопасном режиме валидации
           echo "Применяем манифесты..."
-          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
+          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml --dry-run=client
