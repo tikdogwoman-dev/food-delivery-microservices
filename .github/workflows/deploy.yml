@@ -119,6 +119,19 @@ jobs:
           kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="$IAM_TOKEN"
           kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
 
-          # Применяем манифест инфраструктуры
-          echo "Применяем манифесты..."
-          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
+          # ==========================================
+          # ИСПРАВЛЕННЫЙ БЛОК ПРИМЕНЕНИЯ МАНИФЕСТОВ
+          # ==========================================
+          echo "Переходим в папку с манифестами..."
+          cd ${{ github.workspace }}/deployments/k8s/kubernetes/
+          
+          # Делаем локальный скрипт kubectl исполняемым
+          chmod +x kubectl
+          
+          # 1. Сначала создаем namespace (он нужен для всех остальных ресурсов)
+          echo "Создаем namespace..."
+          ./kubectl apply -f namespaces.yaml
+          
+          # 2. Применяем инфраструктуру через локальный скрипт (он подставит переменные из .env.prod)
+          echo "Применяем infrastructure.yaml..."
+          ./kubectl apply -f infrastructure.yaml
