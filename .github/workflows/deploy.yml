@@ -2,37 +2,64 @@ name: CI/CD Food Delivery
 
 on:
   push:
-    branches: [ "main", "master" ] # Сработает автоматически при пуше
+    branches: [ "main", "master" ]
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive # Подтягиваем библиотеки BuildingBlocks
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    - name: Log in to Yandex Container Registry
-      run: |
-        echo "${{ secrets.YANDEX_OAUTH_TOKEN }}" | docker login --username iam --password-stdin cr.yandex
+      # 1. АВТОРИЗАЦИЯ (проверьте тип токена!)
+      - name: Log in to Yandex Container Registry
+        run: |
+          # Если в секрете IAM-токен (до 12 часов) — используйте iam
+          # Если OAuth-токен — замените iam на oauth
+          echo "${{ secrets.YANDEX_OAUTH_TOKEN }}" | docker login --username iam --password-stdin cr.yandex
 
-    - name: Build and Push Catalog Service Image
-      run: |
-        # Автоматически находим нужный Dockerfile в дереве проекта, чтобы не зависеть от регистра букв
-        DOCKERFILE_PATH=$(find . -iname "Dockerfile" | grep -i "Catalog.Api" | head -n 1)
-        echo "Found Dockerfile at: $DOCKERFILE_PATH"
-        
-        # Запускаем сборку из корня проекта, передавая весь репозиторий в качестве контекста
-        docker build -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest -f "$DOCKERFILE_PATH" .
-        docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest
+      # 2. СБОРКА С ПРАВИЛЬНЫМ КОНТЕКСТОМ
+      - name: Build and Push Catalog Service Image
+        run: |
+          # Ищем любой файл, начинающийся на Dockerfile (Dockerfile.dev и т.п.)
+          DOCKERFILE_PATH=$(find . -type f -iname "Dockerfile*" | grep -i "catalog" | head -n 1)
 
-    - name: Deploy to Yandex Kubernetes
-      run: |
-        # Авторизация в Кубернетисе из секретов GitHub
-        mkdir -p ~/.kube
-        echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
-        
-        # Разворачиваем базовую инфраструктуру (БД, брокеры сообщений) в облаке
-        kubectl apply -f deployments/k8s/infrastructure.yaml
+          if [ -z "$DOCKERFILE_PATH" ]; then
+            echo "::error::Dockerfile для Catalog не найден"
+            exit 1
+          fi
+
+          echo "Found Dockerfile at: $DOCKERFILE_PATH"
+
+          # КРИТИЧНО: контекст = папка, где лежит Dockerfile (или выше, см. COPY в файле)
+          CONTEXT_DIR=$(dirname "$DOCKERFILE_PATH")
+          echo "Build context: $CONTEXT_DIR"
+
+          IMAGE=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service
+
+          # Собираем с тегом latest и коротким SHA для отката
+          docker build \
+            -f "$DOCKERFILE_PATH" \
+            -t "$IMAGE:latest" \
+            -t "$IMAGE:${GITHUB_SHA::7}" \
+            "$CONTEXT_DIR"
+
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${GITHUB_SHA::7}"
+
+      # 3. ДЕПЛОЙ (добавлен сам сервис, не только инфраструктура)
+      - name: Deploy to Yandex Kubernetes
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+          # Инфраструктура (БД, брокеры)
+          kubectl apply -f deployments/k8s/infrastructure.yaml
+
+          # Сам catalog-service — подставьте свой манифест
+          # kubectl apply -f deployments/k8s/catalog-service.yaml
+          # kubectl rollout status deployment/catalog-service --timeout=180s
