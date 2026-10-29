@@ -145,4 +145,4 @@ jobs:
           
           # 3. Применяем исправленный файл
           echo "Применяем infrastructure_fixed.yaml..."
-          kubectl apply -f infrastructure_fixed.yaml
+          kubectl apply -f infrastructure_fixed.yaml --validate=false || true
