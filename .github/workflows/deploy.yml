@@ -16,12 +16,12 @@ jobs:
 
     - name: Log in to Yandex Container Registry
       run: |
-        echo "${{ secrets.YANDEX_OAUTH_TOKEN }}" | docker login --username iam --password-stdin cr.yandex
+        echo "${{ secrets.YANDEX_OAUTH_TOKEN }}" | docker login --username oauth --password-stdin cr.yandex
 
     - name: Build and Push Catalog Service Image
       run: |
         # Сборка Docker-образа сервиса каталога и отправка в ваш Registry
-        docker build -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest -f src/Services/Catalog/Catalog.Api/Dockerfile .
+        docker build -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest -f src/services/Catalog/Catalog.Api/Dockerfile .
         docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest
 
     - name: Deploy to Yandex Kubernetes
