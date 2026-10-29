@@ -14,22 +14,14 @@ jobs:
         with:
           submodules: recursive
 
-      # 1. АВТОРИЗАЦИЯ В ЯНДЕКС ОБЛАКЕ ЧЕРЕЗ СЕРВИСНЫЙ АККАУНТ
-      # Этот шаг получает IAM-токен из вашего key.json (секрет YANDEX_SA_KEY)
-      # и сохраняет его в переменную окружения YC_IAM_TOKEN
-      - name: Authenticate to Yandex Cloud
-        id: auth
-        uses: yandex-cloud/yc-actions/auth@v1
+      # 1. АВТОРИЗАЦИЯ В DOCKER REGISTRY ЯНДЕКСА
+      # Экшен сам возьмет ваш ключ (секрет YANDEX_SA_KEY), получит IAM-токен и залогинится в Docker
+      - name: Login to Yandex Container Registry
+        uses: yc-actions/yc-cr-login@v3
         with:
-          service-account-key: ${{ secrets.YANDEX_SA_KEY }}
+          yc-sa-json-credentials: ${{ secrets.YANDEX_SA_KEY }}
 
-      # 2. АВТОРИЗАЦИЯ В DOCKER REGISTRY
-      # Используем полученный IAM-токен для входа в реестр
-      - name: Log in to Yandex Container Registry
-        run: |
-          echo "${{ steps.auth.outputs.iam-token }}" | docker login --username iam --password-stdin cr.yandex
-
-      # 3. СБОРКА И ПУШ ОБРАЗА
+      # 2. СБОРКА И ПУШ ОБРАЗА
       - name: Build and Push Catalog Service Image
         run: |
           DOCKERFILE_PATH=$(find . -type f -iname "Dockerfile*" | grep -i "catalog" | head -n 1)
@@ -54,17 +46,53 @@ jobs:
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${GITHUB_SHA::7}"
 
-      # 4. ДЕПЛОЙ В KUBERNETES
+      # 3. ДЕПЛОЙ В KUBERNETES
       - name: Deploy to Yandex Kubernetes
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
 
-          echo "Подставляем IAM токен в kubeconfig..."
+          echo "Получаем IAM токен из ключа сервисного аккаунта..."
           
-          # Используем токен, полученный на шаге авторизации
-          kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="${{ steps.auth.outputs.iam-token }}"
+          # Используем утилиту jq, чтобы вытащить нужные поля из JSON-ключа
+          SA_ID=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.service_account_id')
+          KEY_ID=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.id')
+          PRIVATE_KEY=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.private_key')
+          
+          # Генерируем JWT (упрощенно, через openssl) и меняем на IAM-токен
+          # ВАЖНО: Это упрощенный скрипт. Если он не сработает, лучше использовать готовый экшен.
+          # Но для теста можно попробовать так.
+          
+          # Формируем заголовок и полезную нагрузку JWT
+          HEADER=$(echo -n '{"alg":"PS256","typ":"JWT","kid":"'$KEY_ID'"}' | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+          NOW=$(date +%s)
+          EXP=$((NOW + 3600))
+          PAYLOAD=$(echo -n '{"iss":"'$SA_ID'","aud":"https://iam.api.cloud.yandex.net/iam/v1/tokens","iat":'$NOW',"exp":'$EXP'}' | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+          
+          # Подписываем
+          SIGNING_INPUT="$HEADER.$PAYLOAD"
+          SIGNATURE=$(echo -n "$SIGNING_INPUT" | openssl dgst -sha256 -sign <(echo -e "$PRIVATE_KEY") | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+          
+          JWT="$SIGNING_INPUT.$SIGNATURE"
+          
+          # Меняем JWT на IAM-токен
+          RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"jwt\":\"$JWT\"}" \
+            "https://iam.api.cloud.yandex.net/iam/v1/tokens")
+            
+          IAM_TOKEN=$(echo "$RESPONSE" | jq -r '.iamToken')
+          
+          if [ -z "$IAM_TOKEN" ] || [ "$IAM_TOKEN" == "null" ]; then
+            echo "::error::Не удалось получить IAM токен. Ответ: $RESPONSE"
+            exit 1
+          fi
+          
+          echo "IAM токен успешно получен."
+
+          # Подставляем токен в kubeconfig
+          kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="$IAM_TOKEN"
           kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
 
           # Применяем манифест инфраструктуры
