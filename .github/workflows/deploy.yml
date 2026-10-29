@@ -14,71 +14,95 @@ jobs:
         with:
           submodules: recursive
 
-      # 1. АВТОРИЗАЦИЯ (проверьте тип токена!)
+      # 1. АВТОРИЗАЦИЯ В DOCKER REGISTRY (ОСТАВЛЯЕМ КАК БЫЛО, НО ИСПОЛЬЗУЕМ SA_KEY)
+      # Внимание: Если Docker тоже требует JSON-ключ, а не OAuth, 
+      # лучше использовать экшен yc-actions/yc-cr-login@v3 (см. комментарий ниже).
+      # Пока оставляем ваш вариант, если он работает.
       - name: Log in to Yandex Container Registry
         run: |
-          # Если в секрете IAM-токен (до 12 часов) — используйте iam
-          # Если OAuth-токен — замените iam на oauth
+          # ВНИМАНИЕ: Если вы удалили YANDEX_OAUTH_TOKEN, этот шаг упадет.
+          # Для JSON-ключа используйте yc-actions/yc-cr-login@v3 
+          # (пример в конце файла в комментариях).
           echo "${{ secrets.YANDEX_OAUTH_TOKEN }}" | docker login --username iam --password-stdin cr.yandex
+
       # 2. СБОРКА С ПРАВИЛЬНЫМ КОНТЕКСТОМ
       - name: Build and Push Catalog Service Image
         run: |
-          # Ищем любой файл, начинающийся на Dockerfile (Dockerfile.dev и т.п.)
           DOCKERFILE_PATH=$(find . -type f -iname "Dockerfile*" | grep -i "catalog" | head -n 1)
           if [ -z "$DOCKERFILE_PATH" ]; then
             echo "::error::Dockerfile для Catalog не найден"
             exit 1
           fi
           echo "Found Dockerfile at: $DOCKERFILE_PATH"
-          # КРИТИЧНО: контекст = папка, где лежит Dockerfile (или выше, см. COPY в файле)
+          
           CONTEXT_DIR=$(dirname "$DOCKERFILE_PATH")
           echo "Build context: $CONTEXT_DIR"
+          
           IMAGE=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service
-          # Собираем с тегом latest и коротким SHA для отката
+          
           docker build \
             -f "$DOCKERFILE_PATH" \
             -t "$IMAGE:latest" \
             -t "$IMAGE:${GITHUB_SHA::7}" \
-            .
+            "$CONTEXT_DIR"
+            
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${GITHUB_SHA::7}"
-      # 3. ДЕПЛОЙ (добавлен сам сервис, не только инфраструктура)
+
+      # 3. ДЕПЛОЙ В KUBERNETES С ИСПОЛЬЗОВАНИЕМ PYTHON ДЛЯ JWT
       - name: Deploy to Yandex Kubernetes
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
           
-          echo "Получаем IAM токен из JSON-ключа сервисного аккаунта..."
+          echo "Генерируем JWT и получаем IAM токен через Python..."
           
-          # 1. Извлекаем данные из секрета YANDEX_SA_KEY
-          SA_ID=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.service_account_id')
-          KEY_ID=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.id')
-          PRIVATE_KEY=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.private_key')
+          # Устанавливаем библиотеки для работы с JWT
+          pip install pyjwt cryptography --quiet
           
-          # Проверка, что ключ прочитался
-          if [ "$SA_ID" == "null" ] || [ -z "$SA_ID" ]; then
-            echo "::error::Не удалось прочитать JSON-ключ. Проверьте секрет YANDEX_SA_KEY."
+          # Сохраняем JSON-ключ во временный файл
+          echo '${{ secrets.YANDEX_SA_KEY }}' > /tmp/sa_key.json
+          
+          # Запускаем Python-скрипт для получения IAM-токена
+          IAM_TOKEN=$(python3 -c "
+          import json, time, jwt
+          from cryptography.hazmat.primitives import serialization
+          
+          with open('/tmp/sa_key.json') as f:
+              key_data = json.load(f)
+          
+          private_key = serialization.load_pem_private_key(
+              key_data['private_key'].encode(),
+              password=None
+          )
+          
+          now = int(time.time())
+          payload = {
+              'aud': 'https://iam.api.cloud.yandex.net/iam/v1/tokens',
+              'iss': key_data['service_account_id'],
+              'iat': now,
+              'exp': now + 3600
+          }
+          
+          encoded_jwt = jwt.encode(
+              payload,
+              private_key,
+              algorithm='PS256',
+              headers={'kid': key_data['id']}
+          )
+          print(encoded_jwt)
+          ")
+
+          if [ -z "$IAM_TOKEN" ] || [ "$IAM_TOKEN" == "null" ]; then
+            echo "::error::Не удалось сгенерировать JWT. Проверьте секрет YANDEX_SA_KEY."
             exit 1
           fi
 
-          # 2. Формируем JWT (JSON Web Token)
-          HEADER=$(echo -n '{"alg":"PS256","typ":"JWT","kid":"'$KEY_ID'"}' | base64 -w 0 | tr '+/' '-_' | tr -d '=')
-          NOW=$(date +%s)
-          EXP=$((NOW + 3600))
-          PAYLOAD=$(echo -n '{"iss":"'$SA_ID'","aud":"https://iam.api.cloud.yandex.net/iam/v1/tokens","iat":'$NOW',"exp":'$EXP'}' | base64 -w 0 | tr '+/' '-_' | tr -d '=')
-          
-          SIGNING_INPUT="$HEADER.$PAYLOAD"
-          
-          # 3. Подписываем JWT приватным ключом
-          SIGNATURE=$(echo -n "$SIGNING_INPUT" | openssl dgst -sha256 -sign <(echo -e "$PRIVATE_KEY") | base64 -w 0 | tr '+/' '-_' | tr -d '=')
-          
-          JWT="$SIGNING_INPUT.$SIGNATURE"
-          
-          # 4. Меняем JWT на IAM-токен
+          # Обмениваем JWT на IAM-токен
           RESPONSE=$(curl -s -X POST \
             -H "Content-Type: application/json" \
-            -d "{\"jwt\":\"$JWT\"}" \
+            -d "{\"jwt\":\"$IAM_TOKEN\"}" \
             "https://iam.api.cloud.yandex.net/iam/v1/tokens")
             
           IAM_TOKEN=$(echo "$RESPONSE" | jq -r '.iamToken')
@@ -90,10 +114,10 @@ jobs:
           
           echo "IAM токен успешно получен."
 
-          # 5. Подставляем токен в kubeconfig
+          # Подставляем токен в kubeconfig
           kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="$IAM_TOKEN"
           kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
 
-          # 6. Применяем манифест инфраструктуры
+          # Применяем манифест инфраструктуры
           echo "Применяем манифесты..."
           kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
