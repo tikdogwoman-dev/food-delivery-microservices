@@ -56,23 +56,25 @@ jobs:
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
           
-          # 1. Получаем IAM-токен, используя ваш OAuth-токен
-          echo "Получаем IAM токен..."
-          IAM_TOKEN=$(curl -s -X POST \
+          echo "Запрос IAM токена..."
+          # Сохраняем ответ в переменную
+          RESPONSE=$(curl -s -X POST \
             -H "Content-Type: application/x-www-form-urlencoded" \
             -d "yandexPassportOauthToken=${{ secrets.YANDEX_OAUTH_TOKEN }}" \
-            "https://iam.api.cloud.yandex.net/iam/v1/tokens" | jq -r '.iamToken')
-            
+            "https://iam.api.cloud.yandex.net/iam/v1/tokens")
+          
+          # ВЫВОДИМ ОТВЕТ ДЛЯ ОТЛАДКИ (секрет скрыт, а ответ API - нет)
+          echo "Ответ от API: $RESPONSE"
+          
+          # Извлекаем токен
+          IAM_TOKEN=$(echo "$RESPONSE" | jq -r '.iamToken')
+          
+          # Если jq вернул null, значит токена нет
           if [ "$IAM_TOKEN" == "null" ] || [ -z "$IAM_TOKEN" ]; then
-            echo "::error::Не удалось получить IAM токен. Проверьте YANDEX_OAUTH_TOKEN."
+            echo "::error::Не удалось получить IAM токен. Смотрите ответ API выше."
             exit 1
           fi
           
-          # 2. Привязываем IAM-токен к пользователю
           kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="$IAM_TOKEN"
-          
-          # 3. Перезаписываем пользователя для контекста
           kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
-
-          # 4. Применяем манифест инфраструктуры
           kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
