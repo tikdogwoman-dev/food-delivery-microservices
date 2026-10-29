@@ -13,94 +13,71 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Принудительная инициализация сабмодулей (на случай, если checkout не справился)
-      - name: Init submodules manually
+      # 1. АВТОРИЗАЦИЯ (проверьте тип токена!)
+      - name: Log in to Yandex Container Registry
         run: |
-          git submodule update --init --recursive
-
-      # Диагностика: проверяем, что папка Shared на месте
-      - name: Debug - Check Shared folder
-        run: |
-          echo "=== Checking src/Services/Shared ==="
-          ls -la src/Services/Shared/ || echo "Shared folder not found or empty"
-
-      # 1. АВТОРИЗАЦИЯ В DOCKER REGISTRY ЯНДЕКСА
-      - name: Login to Yandex Container Registry
-        uses: yc-actions/yc-cr-login@v3
-        with:
-          yc-sa-json-credentials: ${{ secrets.YANDEX_SA_KEY }}
-
-      # 2. СБОРКА И ПУШ ОБРАЗА
+          # Если в секрете IAM-токен (до 12 часов) — используйте iam
+          # Если OAuth-токен — замените iam на oauth
+          echo "${{ secrets.YANDEX_OAUTH_TOKEN }}" | docker login --username iam --password-stdin cr.yandex
+      # 2. СБОРКА С ПРАВИЛЬНЫМ КОНТЕКСТОМ
       - name: Build and Push Catalog Service Image
         run: |
+          # Ищем любой файл, начинающийся на Dockerfile (Dockerfile.dev и т.п.)
           DOCKERFILE_PATH=$(find . -type f -iname "Dockerfile*" | grep -i "catalog" | head -n 1)
-
           if [ -z "$DOCKERFILE_PATH" ]; then
             echo "::error::Dockerfile для Catalog не найден"
             exit 1
           fi
-
           echo "Found Dockerfile at: $DOCKERFILE_PATH"
+          # КРИТИЧНО: контекст = папка, где лежит Dockerfile (или выше, см. COPY в файле)
           CONTEXT_DIR=$(dirname "$DOCKERFILE_PATH")
           echo "Build context: $CONTEXT_DIR"
-
           IMAGE=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service
-
+          # Собираем с тегом latest и коротким SHA для отката
           docker build \
             -f "$DOCKERFILE_PATH" \
             -t "$IMAGE:latest" \
             -t "$IMAGE:${GITHUB_SHA::7}" \
-            "$CONTEXT_DIR"
-
+            .
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${GITHUB_SHA::7}"
-
-      # 3. ДЕПЛОЙ В KUBERNETES
+      # 3. ДЕПЛОЙ (добавлен сам сервис, не только инфраструктура)
       - name: Deploy to Yandex Kubernetes
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
-
-          echo "Получаем IAM токен из ключа сервисного аккаунта..."
+          echo "Запрос IAM токена..."
           
-          # Извлекаем данные из JSON-ключа
-          SA_ID=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.service_account_id')
-          KEY_ID=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.id')
-          PRIVATE_KEY=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.private_key')
-          
-          # Генерируем JWT
-          HEADER=$(echo -n '{"alg":"PS256","typ":"JWT","kid":"'$KEY_ID'"}' | base64 -w 0 | tr '+/' '-_' | tr -d '=')
-          NOW=$(date +%s)
-          EXP=$((NOW + 3600))
-          PAYLOAD=$(echo -n '{"iss":"'$SA_ID'","aud":"https://iam.api.cloud.yandex.net/iam/v1/tokens","iat":'$NOW',"exp":'$EXP'}' | base64 -w 0 | tr '+/' '-_' | tr -d '=')
-          
-          SIGNING_INPUT="$HEADER.$PAYLOAD"
-          SIGNATURE=$(echo -n "$SIGNING_INPUT" | openssl dgst -sha256 -sign <(echo -e "$PRIVATE_KEY") | base64 -w 0 | tr '+/' '-_' | tr -d '=')
-          
-          JWT="$SIGNING_INPUT.$SIGNATURE"
-          
-          # Меняем JWT на IAM-токен
-          RESPONSE=$(curl -s -X POST \
-            -H "Content-Type: application/json" \
-            -d "{\"jwt\":\"$JWT\"}" \
+          # Отправляем запрос и сохраняем ответ вместе с HTTP-статусом
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "yandexPassportOauthToken=${{ secrets.YANDEX_OAUTH_TOKEN }}" \
             "https://iam.api.cloud.yandex.net/iam/v1/tokens")
             
-          IAM_TOKEN=$(echo "$RESPONSE" | jq -r '.iamToken')
+          echo "Полный ответ: $RESPONSE"
+          
+          # Проверяем HTTP-статус
+          HTTP_STATUS=$(echo "$RESPONSE" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
+          
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "::error::Ошибка HTTP $HTTP_STATUS от API Яндекса. Проверьте секрет YANDEX_OAUTH_TOKEN."
+            exit 1
+          fi
+          
+          # Извлекаем токен
+          IAM_TOKEN=$(echo "$RESPONSE" | grep -o '{"iamToken":.*}' | jq -r '.iamToken' 2>/dev/null)
           
           if [ -z "$IAM_TOKEN" ] || [ "$IAM_TOKEN" == "null" ]; then
-            echo "::error::Не удалось получить IAM токен. Ответ: $RESPONSE"
+            echo "::error::Не удалось извлечь IAM токен из ответа."
             exit 1
           fi
           
           echo "IAM токен успешно получен."
-
           # Подставляем токен в kubeconfig
           kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="$IAM_TOKEN"
           kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
-
           # Применяем манифест инфраструктуры
           echo "Применяем манифесты..."
           kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
