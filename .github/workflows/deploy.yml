@@ -53,13 +53,13 @@ jobs:
       - name: Deploy to Yandex Kubernetes
         run: |
           mkdir -p ~/.kube
+          # Безопасная запись kubeconfig
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
           
+          # Выводим текущую директорию и проверяем наличие файла для дебага
+          echo "Current dir: $(pwd)"
+          ls -la ${{ github.workspace }}/deployments/k8s/kubernetes/
 
-          # Инфраструктура (БД, брокеры)
-          kubectl apply -f deployments/k8s/kubernetes/infrastructure.yaml
-
-          # Сам catalog-service — подставьте свой манифест
-          # kubectl apply -f deployments/k8s/catalog-service.yaml
-          # kubectl rollout status deployment/catalog-service --timeout=180s
+          # Применяем манифест, используя абсолютный путь
+          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
