@@ -1,0 +1,34 @@
+name: CI/CD Food Delivery
+
+on:
+  push:
+    branches: [ "main", "master" ] # Сработает автоматически при пуше
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive # Подтягиваем библиотеки BuildingBlocks
+
+    - name: Log in to Yandex Container Registry
+      run: |
+        echo "${{ secrets.YANDEX_OAUTH_TOKEN }}" | docker login --username oauth --password-stdin cr.yandex
+
+    - name: Build and Push Catalog Service Image
+      run: |
+        # Сборка Docker-образа сервиса каталога и отправка в ваш Registry
+        docker build -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest -f src/Services/Catalog/Catalog.Api/Dockerfile .
+        docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest
+
+    - name: Deploy to Yandex Kubernetes
+      run: |
+        # Авторизация в Кубернетисе из секретов GitHub
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
+        
+        # Разворачиваем базовую инфраструктуру (БД, брокеры сообщений) в облаке
+        kubectl apply -f deployments/k8s/infrastructure.yaml
