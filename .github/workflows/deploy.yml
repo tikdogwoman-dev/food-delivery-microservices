@@ -58,7 +58,7 @@ jobs:
           
 
           # Инфраструктура (БД, брокеры)
-          kubectl apply -f deployments/K8s/infrastructure.yaml
+          kubectl apply -f deployments/k8s/kubernetes/infrastructure.yaml
 
           # Сам catalog-service — подставьте свой манифест
           # kubectl apply -f deployments/k8s/catalog-service.yaml
