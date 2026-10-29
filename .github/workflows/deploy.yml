@@ -20,9 +20,9 @@ jobs:
 
     - name: Build and Push Catalog Service Image
       run: |
-        # Переходим в корень проекта, где виден весь контекст src/Services
-        docker build -t cr.yandex/${{ secrets.YANDEX_REGISTRY_ID }}/catalog-service:latest -f src/Services/Catalog/Catalog.Api/Dockerfile .
-        docker push cr.yandex/${{ secrets.YANDEX_REGISTRY_ID }}/catalog-service:latest
+        # Собираем образ с маленькой буквы services и правильным секретом YC_REGISTRY_ID
+        docker build -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest -f src/services/Catalog/Catalog.Api/Dockerfile .
+        docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest
 
     - name: Deploy to Yandex Kubernetes
       run: |
