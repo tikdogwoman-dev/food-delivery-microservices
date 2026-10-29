@@ -14,17 +14,24 @@ jobs:
         with:
           submodules: recursive
 
-      # 1. АВТОРИЗАЦИЯ (проверьте тип токена!)
+      # 1. АВТОРИЗАЦИЯ В ЯНДЕКС ОБЛАКЕ ЧЕРЕЗ СЕРВИСНЫЙ АККАУНТ
+      # Этот шаг получает IAM-токен из вашего key.json (секрет YANDEX_SA_KEY)
+      # и сохраняет его в переменную окружения YC_IAM_TOKEN
+      - name: Authenticate to Yandex Cloud
+        id: auth
+        uses: yandex-cloud/yc-actions/auth@v1
+        with:
+          service-account-key: ${{ secrets.YANDEX_SA_KEY }}
+
+      # 2. АВТОРИЗАЦИЯ В DOCKER REGISTRY
+      # Используем полученный IAM-токен для входа в реестр
       - name: Log in to Yandex Container Registry
         run: |
-          # Если в секрете IAM-токен (до 12 часов) — используйте iam
-          # Если OAuth-токен — замените iam на oauth
-          echo "${{ secrets.YANDEX_OAUTH_TOKEN }}" | docker login --username iam --password-stdin cr.yandex
+          echo "${{ steps.auth.outputs.iam-token }}" | docker login --username iam --password-stdin cr.yandex
 
-      # 2. СБОРКА С ПРАВИЛЬНЫМ КОНТЕКСТОМ
+      # 3. СБОРКА И ПУШ ОБРАЗА
       - name: Build and Push Catalog Service Image
         run: |
-          # Ищем любой файл, начинающийся на Dockerfile (Dockerfile.dev и т.п.)
           DOCKERFILE_PATH=$(find . -type f -iname "Dockerfile*" | grep -i "catalog" | head -n 1)
 
           if [ -z "$DOCKERFILE_PATH" ]; then
@@ -33,47 +40,33 @@ jobs:
           fi
 
           echo "Found Dockerfile at: $DOCKERFILE_PATH"
-
-          # КРИТИЧНО: контекст = папка, где лежит Dockerfile (или выше, см. COPY в файле)
           CONTEXT_DIR=$(dirname "$DOCKERFILE_PATH")
           echo "Build context: $CONTEXT_DIR"
 
           IMAGE=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service
 
-          # Собираем с тегом latest и коротким SHA для отката
           docker build \
             -f "$DOCKERFILE_PATH" \
             -t "$IMAGE:latest" \
             -t "$IMAGE:${GITHUB_SHA::7}" \
-            .
+            "$CONTEXT_DIR"
+
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${GITHUB_SHA::7}"
 
-      # 3. ДЕПЛОЙ (добавлен сам сервис, не только инфраструктура)
+      # 4. ДЕПЛОЙ В KUBERNETES
       - name: Deploy to Yandex Kubernetes
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
 
-          # 1. Сохраняем ключ сервисного аккаунта из секретов GitHub в файл
-          echo '${{ secrets.YANDEX_SA_KEY }}' > sa-key.json
-
-          # 2. Скачиваем официальную легковесную утилиту yc для Linux прямо в пайплайн
-          curl -sSL https://yandexcloud.net | bash -s -- -b ~/.yc/bin
-          export PATH=$PATH:$HOME/.yc/bin
-
-          # 3. Авторизуем утилиту yc по созданному ключу сервисного аккаунта
-          yc config profile create sa-profile
-          yc config set service-account-key sa-key.json
-
-          # 4. Генерируем свежий рабочий токен авторизации Кубернетиса
-          IAM_TOKEN=$(yc iam create-token)
-
-          # 5. Привязываем полученный токен к пользователю кластера
-          kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="$IAM_TOKEN"
+          echo "Подставляем IAM токен в kubeconfig..."
+          
+          # Используем токен, полученный на шаге авторизации
+          kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="${{ steps.auth.outputs.iam-token }}"
           kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
 
-          # 6. Применяем манифест инфраструктуры в безопасном режиме валидации
+          # Применяем манифест инфраструктуры
           echo "Применяем манифесты..."
-          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml --dry-run=client
+          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
