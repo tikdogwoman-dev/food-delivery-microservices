@@ -48,36 +48,52 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
-          echo "Запрос IAM токена..."
           
-          # Отправляем запрос и сохраняем ответ вместе с HTTP-статусом
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            -d "yandexPassportOauthToken=${{ secrets.YANDEX_OAUTH_TOKEN }}" \
-            "https://iam.api.cloud.yandex.net/iam/v1/tokens")
-            
-          echo "Полный ответ: $RESPONSE"
+          echo "Получаем IAM токен из JSON-ключа сервисного аккаунта..."
           
-          # Проверяем HTTP-статус
-          HTTP_STATUS=$(echo "$RESPONSE" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
+          # 1. Извлекаем данные из секрета YANDEX_SA_KEY
+          SA_ID=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.service_account_id')
+          KEY_ID=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.id')
+          PRIVATE_KEY=$(echo '${{ secrets.YANDEX_SA_KEY }}' | jq -r '.private_key')
           
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "::error::Ошибка HTTP $HTTP_STATUS от API Яндекса. Проверьте секрет YANDEX_OAUTH_TOKEN."
+          # Проверка, что ключ прочитался
+          if [ "$SA_ID" == "null" ] || [ -z "$SA_ID" ]; then
+            echo "::error::Не удалось прочитать JSON-ключ. Проверьте секрет YANDEX_SA_KEY."
             exit 1
           fi
+
+          # 2. Формируем JWT (JSON Web Token)
+          HEADER=$(echo -n '{"alg":"PS256","typ":"JWT","kid":"'$KEY_ID'"}' | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+          NOW=$(date +%s)
+          EXP=$((NOW + 3600))
+          PAYLOAD=$(echo -n '{"iss":"'$SA_ID'","aud":"https://iam.api.cloud.yandex.net/iam/v1/tokens","iat":'$NOW',"exp":'$EXP'}' | base64 -w 0 | tr '+/' '-_' | tr -d '=')
           
-          # Извлекаем токен
-          IAM_TOKEN=$(echo "$RESPONSE" | grep -o '{"iamToken":.*}' | jq -r '.iamToken' 2>/dev/null)
+          SIGNING_INPUT="$HEADER.$PAYLOAD"
+          
+          # 3. Подписываем JWT приватным ключом
+          SIGNATURE=$(echo -n "$SIGNING_INPUT" | openssl dgst -sha256 -sign <(echo -e "$PRIVATE_KEY") | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+          
+          JWT="$SIGNING_INPUT.$SIGNATURE"
+          
+          # 4. Меняем JWT на IAM-токен
+          RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"jwt\":\"$JWT\"}" \
+            "https://iam.api.cloud.yandex.net/iam/v1/tokens")
+            
+          IAM_TOKEN=$(echo "$RESPONSE" | jq -r '.iamToken')
           
           if [ -z "$IAM_TOKEN" ] || [ "$IAM_TOKEN" == "null" ]; then
-            echo "::error::Не удалось извлечь IAM токен из ответа."
+            echo "::error::Не удалось получить IAM токен. Ответ API: $RESPONSE"
             exit 1
           fi
           
           echo "IAM токен успешно получен."
-          # Подставляем токен в kubeconfig
+
+          # 5. Подставляем токен в kubeconfig
           kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="$IAM_TOKEN"
           kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
-          # Применяем манифест инфраструктуры
+
+          # 6. Применяем манифест инфраструктуры
           echo "Применяем манифесты..."
           kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
