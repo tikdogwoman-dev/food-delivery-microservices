@@ -20,8 +20,12 @@ jobs:
 
     - name: Build and Push Catalog Service Image
       run: |
-        # Собираем образ с маленькой буквы services и правильным секретом YC_REGISTRY_ID
-        docker build -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest -f src/services/Catalog/Catalog.Api/Dockerfile .
+        # Автоматически находим нужный Dockerfile в дереве проекта, чтобы не зависеть от регистра букв
+        DOCKERFILE_PATH=$(find . -iname "Dockerfile" | grep -i "Catalog.Api" | head -n 1)
+        echo "Found Dockerfile at: $DOCKERFILE_PATH"
+        
+        # Запускаем сборку из корня проекта, передавая весь репозиторий в качестве контекста
+        docker build -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest -f "$DOCKERFILE_PATH" .
         docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service:latest
 
     - name: Deploy to Yandex Kubernetes
