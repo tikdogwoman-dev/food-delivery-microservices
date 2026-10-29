@@ -28,23 +28,24 @@ jobs:
       # 2. СБОРКА С ПРАВИЛЬНЫМ КОНТЕКСТОМ
       - name: Build and Push Catalog Service Image
         run: |
+          # Ищем Dockerfile
           DOCKERFILE_PATH=$(find . -type f -iname "Dockerfile*" | grep -i "catalog" | head -n 1)
+          
           if [ -z "$DOCKERFILE_PATH" ]; then
             echo "::error::Dockerfile для Catalog не найден"
             exit 1
           fi
-          echo "Found Dockerfile at: $DOCKERFILE_PATH"
           
-          CONTEXT_DIR=$(dirname "$DOCKERFILE_PATH")
-          echo "Build context: $CONTEXT_DIR"
+          echo "Found Dockerfile at: $DOCKERFILE_PATH"
           
           IMAGE=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service
           
+          # КРИТИЧНО: Передаем точку (.) как контекст, потому что Dockerfile ищет пути от корня!
           docker build \
             -f "$DOCKERFILE_PATH" \
             -t "$IMAGE:latest" \
             -t "$IMAGE:${GITHUB_SHA::7}" \
-            "$CONTEXT_DIR"
+            .
             
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${GITHUB_SHA::7}"
