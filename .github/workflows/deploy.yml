@@ -125,16 +125,15 @@ jobs:
           echo "Переходим в папку с манифестами..."
           cd ${{ github.workspace }}/deployments/k8s/kubernetes/
           
-          # СКРИПТ ./kubectl ищет файл .env, а у нас есть .env.prod. Создаем копию.
-          cp .env.prod .env
-          
-          # Делаем локальный скрипт kubectl исполняемым
-          chmod +x kubectl
-          
-          # 1. Сначала создаем namespace (он нужен для всех остальных ресурсов)
+          # 1. Создаем namespace
           echo "Создаем namespace..."
+          chmod +x kubectl
           ./kubectl apply -f namespaces.yaml
           
-          # 2. Применяем инфраструктуру через локальный скрипт (он подставит переменные из .env)
-          echo "Применяем infrastructure.yaml..."
-          ./kubectl apply -f infrastructure.yaml
+          # 2. Подготавливаем манифест: заменяем ${ENVIRONMENT:-dev} на dev
+          echo "Подготавливаем манифест (замена переменных)..."
+          sed 's/\${ENVIRONMENT:-dev}/dev/g' infrastructure.yaml > infrastructure_fixed.yaml
+          
+          # 3. Применяем исправленный файл через обычный kubectl
+          echo "Применяем infrastructure_fixed.yaml..."
+          kubectl apply -f infrastructure_fixed.yaml
