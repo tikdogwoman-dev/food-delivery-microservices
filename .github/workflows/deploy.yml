@@ -56,9 +56,11 @@ jobs:
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
           
-          # Очищаем Windows-зависимости из конфига, подставляя токен напрямую
-          kubectl config set-credentials yc-k8s-cluster-production --token="${{ secrets.YANDEX_OAUTH_TOKEN }}"
-          kubectl config use-context yc-k8s-context
+          # 1. Привязываем токен к пользователю, который прописан в вашем kubeconfig
+          kubectl config set-credentials yc-managed-k8s-catsfnq8kgbvpv5eg4cu --token="${{ secrets.YANDEX_OAUTH_TOKEN }}"
+          
+          # 2. Перезаписываем пользователя для контекста, чтобы убрать exec-плагин
+          kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
 
-          # Применяем манифест инфраструктуры
+          # 3. Применяем манифест инфраструктуры
           kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
