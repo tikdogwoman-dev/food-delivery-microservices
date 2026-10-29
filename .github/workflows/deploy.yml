@@ -130,10 +130,19 @@ jobs:
           chmod +x kubectl
           ./kubectl apply -f namespaces.yaml
           
-          # 2. Подготавливаем манифест: заменяем ${ENVIRONMENT:-dev} на dev
+          # 2. Подготавливаем манифест: заменяем ВСЕ переменные на числа
           echo "Подготавливаем манифест (замена переменных)..."
-          sed 's/\${ENVIRONMENT:-dev}/dev/g' infrastructure.yaml > infrastructure_fixed.yaml
+          sed -e 's/\${ENVIRONMENT:-dev}/dev/g' \
+              -e 's/\${RABBITMQ_PORT:-5672}/5672/g' \
+              -e 's/\${RABBITMQ_API_PORT:-15672}/15672/g' \
+              -e 's/\${RABBITMQ_HOST_PORT:-5672}/5672/g' \
+              -e 's/\${RABBITMQ_HOST_API_PORT:-15672}/15672/g' \
+              -e 's/\${MONGO_PORT:-27017}/27017/g' \
+              -e 's/\${MONGO_HOST_PORT:-27017}/27017/g' \
+              -e 's/\${MONGO_USER:-admin}/admin/g' \
+              -e 's/\${MONGO_PASS:-admin}/admin/g' \
+              infrastructure.yaml > infrastructure_fixed.yaml
           
-          # 3. Применяем исправленный файл через обычный kubectl
+          # 3. Применяем исправленный файл
           echo "Применяем infrastructure_fixed.yaml..."
           kubectl apply -f infrastructure_fixed.yaml
