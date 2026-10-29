@@ -58,10 +58,10 @@ jobs:
 
           echo "Запрос IAM токена..."
           
-          # Отправляем запрос и сохраняем ответ вместе с HTTP-статусом
+          # Отправляем JSON, как требует документация Яндекса
           RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            -d "yandexPassportOauthToken=${{ secrets.YANDEX_OAUTH_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"yandexPassportOauthToken\":\"${{ secrets.YANDEX_OAUTH_TOKEN }}\"}" \
             "https://iam.api.cloud.yandex.net/iam/v1/tokens")
             
           echo "Полный ответ: $RESPONSE"
@@ -74,8 +74,8 @@ jobs:
             exit 1
           fi
           
-          # Извлекаем токен
-          IAM_TOKEN=$(echo "$RESPONSE" | grep -o '{"iamToken":.*}' | jq -r '.iamToken' 2>/dev/null)
+          # Извлекаем токен (берем только первую строку с JSON, отбрасываем HTTP_STATUS)
+          IAM_TOKEN=$(echo "$RESPONSE" | head -n 1 | jq -r '.iamToken' 2>/dev/null)
           
           if [ -z "$IAM_TOKEN" ] || [ "$IAM_TOKEN" == "null" ]; then
             echo "::error::Не удалось извлечь IAM токен из ответа."
