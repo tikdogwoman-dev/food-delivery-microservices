@@ -53,13 +53,12 @@ jobs:
       - name: Deploy to Yandex Kubernetes
         run: |
           mkdir -p ~/.kube
-          # Безопасная запись kubeconfig
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
           
-          # Выводим текущую директорию и проверяем наличие файла для дебага
-          echo "Current dir: $(pwd)"
-          ls -la ${{ github.workspace }}/deployments/k8s/kubernetes/
+          # Очищаем Windows-зависимости из конфига, подставляя токен напрямую
+          kubectl config set-credentials yc-k8s-cluster-production --token="${{ secrets.YANDEX_OAUTH_TOKEN }}"
+          kubectl config use-context yc-k8s-context
 
-          # Применяем манифест, используя абсолютный путь
-          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml --validate=false
+          # Применяем манифест инфраструктуры
+          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
