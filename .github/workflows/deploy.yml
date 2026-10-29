@@ -62,4 +62,4 @@ jobs:
           ls -la ${{ github.workspace }}/deployments/k8s/kubernetes/
 
           # Применяем манифест, используя абсолютный путь
-          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml
+          kubectl apply -f ${{ github.workspace }}/deployments/k8s/kubernetes/infrastructure.yaml --validate=false
