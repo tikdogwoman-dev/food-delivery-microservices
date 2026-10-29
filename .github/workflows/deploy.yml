@@ -125,6 +125,9 @@ jobs:
           echo "Переходим в папку с манифестами..."
           cd ${{ github.workspace }}/deployments/k8s/kubernetes/
           
+          # СКРИПТ ./kubectl ищет файл .env, а у нас есть .env.prod. Создаем копию.
+          cp .env.prod .env
+          
           # Делаем локальный скрипт kubectl исполняемым
           chmod +x kubectl
           
@@ -132,6 +135,6 @@ jobs:
           echo "Создаем namespace..."
           ./kubectl apply -f namespaces.yaml
           
-          # 2. Применяем инфраструктуру через локальный скрипт (он подставит переменные из .env.prod)
+          # 2. Применяем инфраструктуру через локальный скрипт (он подставит переменные из .env)
           echo "Применяем infrastructure.yaml..."
           ./kubectl apply -f infrastructure.yaml
