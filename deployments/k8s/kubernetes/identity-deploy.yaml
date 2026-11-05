@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-api-deployment
+  namespace: food-delivery
+  labels:
+    app: identity-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: identity-api
+  template:
+    metadata:
+      labels:
+        app: identity-api
+    spec:
+      containers:
+        - name: identity-api
+          # ID реестра: crp1i4osjhttn3cdq6ao (ваш ID)
+          image: cr.yandex/crp1i4osjhttn3cdq6ao/identity-service:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              value: "Production"
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
+
+            # --- НАСТРОЙКИ ПОДКЛЮЧЕНИЯ К POSTGRES ---
+            # Судя по типичной структуре проекта, используется PostgresOptions
+            - name: PostgresOptions__ConnectionString
+              value: "Server=postgres-service-dev;Port=5432;Database=identitydb;User Id=postgres;Password=postgres;Include Error Detail=true"
+            
+            # Если Identity использует отдельную переменную для миграций
+            - name: MessagePersistenceOptions__ConnectionString
+              value: "Server=postgres-service-dev;Port=5432;Database=identitydb;User Id=postgres;Password=postgres;Include Error Detail=true"
+
+            # --- ОТКЛЮЧАЕМ ТЕЛЕМЕТРИЮ ---
+            # (Чтобы Health Check не падал из-за отсутствия OTLP-коллектора)
+            - name: OpenTelemetryOptions__UseOTLPExporter
+              value: "false"
+            - name: OpenTelemetryOptions__UseAspireOTLPExporter
+              value: "false"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-api-service
+  namespace: food-delivery
+spec:
+  selector:
+    app: identity-api
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: ClusterIP
