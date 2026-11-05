@@ -14,21 +14,15 @@ jobs:
         with:
           submodules: recursive
 
-      # 1. АВТОРИЗАЦИЯ В DOCKER REGISTRY (ОСТАВЛЯЕМ КАК БЫЛО, НО ИСПОЛЬЗУЕМ SA_KEY)
-      # Внимание: Если Docker тоже требует JSON-ключ, а не OAuth, 
-      # лучше использовать экшен yc-actions/yc-cr-login@v3 (см. комментарий ниже).
-      # Пока оставляем ваш вариант, если он работает.
+      # 1. АВТОРИЗАЦИЯ В DOCKER REGISTRY (через сервисный аккаунт)
       - name: Log in to Yandex Container Registry
-        run: |
-          # ВНИМАНИЕ: Если вы удалили YANDEX_OAUTH_TOKEN, этот шаг упадет.
-          # Для JSON-ключа используйте yc-actions/yc-cr-login@v3 
-          # (пример в конце файла в комментариях).
-          echo "${{ secrets.YANDEX_OAUTH_TOKEN }}" | docker login --username iam --password-stdin cr.yandex
+        uses: yc-actions/yc-cr-login@v3
+        with:
+          yc-sa-json-credentials: ${{ secrets.YANDEX_SA_KEY }}
 
-      # 2. СБОРКА С ПРАВИЛЬНЫМ КОНТЕКСТОМ
+      # 2. СБОРКА И ПУШ ОБРАЗА
       - name: Build and Push Catalog Service Image
         run: |
-          # Ищем Dockerfile
           DOCKERFILE_PATH=$(find . -type f -iname "Dockerfile*" | grep -i "catalog" | head -n 1)
           
           if [ -z "$DOCKERFILE_PATH" ]; then
@@ -40,7 +34,6 @@ jobs:
           
           IMAGE=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service
           
-          # КРИТИЧНО: Передаем точку (.) как контекст, потому что Dockerfile ищет пути от корня!
           docker build \
             -f "$DOCKERFILE_PATH" \
             -t "$IMAGE:latest" \
@@ -50,7 +43,7 @@ jobs:
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${GITHUB_SHA::7}"
 
-      # 3. ДЕПЛОЙ В KUBERNETES С ИСПОЛЬЗОВАНИЕМ PYTHON ДЛЯ JWT
+      # 3. ДЕПЛОЙ В KUBERNETES
       - name: Deploy to Yandex Kubernetes
         run: |
           mkdir -p ~/.kube
@@ -120,7 +113,7 @@ jobs:
           kubectl config set-context yc-k8s-cluster-production --user=yc-managed-k8s-catsfnq8kgbvpv5eg4cu
 
           # ==========================================
-          # ИСПРАВЛЕННЫЙ БЛОК ПРИМЕНЕНИЯ МАНИФЕСТОВ
+          # ПРИМЕНЕНИЕ МАНИФЕСТОВ
           # ==========================================
           echo "Переходим в папку с манифестами..."
           cd ${{ github.workspace }}/deployments/k8s/kubernetes/
@@ -130,8 +123,8 @@ jobs:
           chmod +x kubectl
           ./kubectl apply -f namespaces.yaml
           
-          # 2. Подготавливаем манифест: заменяем ВСЕ переменные на числа
-          echo "Подготавливаем манифест (замена переменных)..."
+          # 2. Подготавливаем базовый манифест: заменяем переменные
+          echo "Подготавливаем infrastructure.yaml..."
           sed -e 's/\${ENVIRONMENT:-dev}/dev/g' \
               -e 's/\${RABBITMQ_PORT:-5672}/5672/g' \
               -e 's/\${RABBITMQ_API_PORT:-15672}/15672/g' \
@@ -143,6 +136,19 @@ jobs:
               -e 's/\${MONGO_PASS:-admin}/admin/g' \
               infrastructure.yaml > infrastructure_fixed.yaml
           
-          # 3. Применяем исправленный файл
+          # 3. Применяем инфраструктуру (игнорируем ошибку Traefik)
           echo "Применяем infrastructure_fixed.yaml..."
           kubectl apply -f infrastructure_fixed.yaml --validate=false || true
+
+          # 4. Применяем базы данных (Postgres и Redis)
+          echo "Применяем Postgres и Redis..."
+          kubectl apply -f postgres-deploy.yaml
+          kubectl apply -f redis-deploy.yaml
+          
+          # 5. Применяем сервис Catalogs
+          echo "Применяем catalogs-deploy.yaml..."
+          kubectl apply -f catalogs-deploy.yaml
+          
+          # 6. Ждем, пока под обновится (опционально, но полезно)
+          echo "Ждем обновления пода Catalogs..."
+          kubectl rollout status deployment/catalogs-api-deployment -n food-delivery --timeout=120s
