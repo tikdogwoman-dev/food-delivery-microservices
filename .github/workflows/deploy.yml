@@ -23,10 +23,13 @@ jobs:
       # 2. СБОРКА И ПУШ ОБРАЗА
       - name: Build and Push Catalog Service Image
         run: |
-          DOCKERFILE_PATH=$(find . -type f -iname "Dockerfile*" | grep -i "catalog" | head -n 1)
+          # Ищем ТОЛЬКО основной Dockerfile, исключая .watch и другие
+          DOCKERFILE_PATH=$(find . -type f -name "Dockerfile" | grep -i "Catalog.Api" | head -n 1)
           
           if [ -z "$DOCKERFILE_PATH" ]; then
-            echo "::error::Dockerfile для Catalog не найден"
+            echo "::error::Dockerfile для Catalog.Api не найден"
+            # Для отладки выведем все найденные Dockerfile
+            find . -type f -name "Dockerfile*"
             exit 1
           fi
           
@@ -34,6 +37,7 @@ jobs:
           
           IMAGE=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/catalog-service
           
+          # КРИТИЧНО: Контекст сборки - точка (корень репозитория)
           docker build \
             -f "$DOCKERFILE_PATH" \
             -t "$IMAGE:latest" \
