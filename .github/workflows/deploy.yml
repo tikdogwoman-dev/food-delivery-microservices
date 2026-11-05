@@ -23,11 +23,11 @@ jobs:
       # 2. СБОРКА И ПУШ ОБРАЗА
       - name: Build and Push Catalog Service Image
         run: |
-          # Ищем ТОЛЬКО основной Dockerfile, исключая .watch и другие
-          DOCKERFILE_PATH=$(find . -type f -name "Dockerfile" | grep -i "Catalog.Api" | head -n 1)
+          # Ищем конкретный Dockerfile в папке Catalogs, исключая .watch и .dev
+          DOCKERFILE_PATH=$(find ./src/Services/Catalogs -maxdepth 1 -type f -name "Dockerfile" | head -n 1)
           
           if [ -z "$DOCKERFILE_PATH" ]; then
-            echo "::error::Dockerfile для Catalog.Api не найден"
+            echo "::error::Dockerfile для Catalogs не найден по пути ./src/Services/Catalogs/Dockerfile"
             # Для отладки выведем все найденные Dockerfile
             find . -type f -name "Dockerfile*"
             exit 1
