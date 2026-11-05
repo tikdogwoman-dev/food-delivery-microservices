@@ -149,6 +149,6 @@ jobs:
           echo "Применяем catalogs-deploy.yaml..."
           kubectl apply -f catalogs-deploy.yaml
           
-          # 6. Ждем, пока под обновится (опционально, но полезно)
+          # 6. Ждем, пока под обновится
           echo "Ждем обновления пода Catalogs..."
           kubectl rollout status deployment/catalogs-api-deployment -n food-delivery --timeout=120s
